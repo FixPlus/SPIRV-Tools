@@ -536,6 +536,18 @@ spv_result_t CheckImportExportCompatibility(const MessageConsumer& consumer,
   return SPV_SUCCESS;
 }
 
+bool is_interface_variable(const Instruction* inst, bool is_spv_1_4) {
+  if (is_spv_1_4) {
+    // Starting in SPIR-V 1.4, all global variables are interface variables.
+    return inst->opcode() == SpvOpVariable &&
+           inst->GetOperand(2).words.front() != SpvStorageClassFunction;
+  } else {
+    return inst->opcode() == SpvOpVariable &&
+           (inst->GetOperand(2).words.front() == SpvStorageClassInput ||
+            inst->GetOperand(2).words.front() == SpvStorageClassOutput);
+  }
+}
+
 spv_result_t RemoveLinkageSpecificInstructions(
     const MessageConsumer& consumer, const LinkerOptions& options,
     const LinkageTable& linkings_to_do, DecorationManager* decoration_manager,
@@ -633,6 +645,28 @@ spv_result_t RemoveLinkageSpecificInstructions(
         // now there aren’t more SpvCapabilityLinkage further down.
         break;
       }
+  }
+
+  // Add linked interface variables to entry points interface list
+  // TODO: check if entry point call graph actually uses this variable
+
+  for (auto& var : linked_context->types_values()) {
+    if (is_interface_variable(
+            &var,
+            spvVersionForTargetEnv(linked_context->grammar().target_env()) >=
+                SPV_SPIRV_VERSION_WORD(1, 4))) {
+      for (auto& entryPoint : linked_context->module()->entry_points()) {
+        if (std::find_if(entryPoint.begin(), entryPoint.end(),
+                         [var](opt::Operand const& operand) {
+                           return operand.type == SPV_OPERAND_TYPE_ID &&
+                                  operand.AsId() == var.result_id();
+                         }) == entryPoint.end()) {
+          entryPoint.InsertOperand(
+              entryPoint.NumOperands(),
+              opt::Operand{SPV_OPERAND_TYPE_ID, {var.result_id()}});
+        }
+      }
+    }
   }
 
   return SPV_SUCCESS;
